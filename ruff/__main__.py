@@ -3,8 +3,6 @@ import json
 import os
 import pathlib
 import subprocess
-import urllib.parse
-import urllib.request
 
 
 MARKER = "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"
@@ -21,19 +19,9 @@ repository = os.environ["GITHUB_REPOSITORY"]
 token_present = bool(os.environ.get("GITHUB_TOKEN"))
 gh_token_present = bool(os.environ.get("GH_TOKEN"))
 
-oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-separator = "&" if "?" in oidc_url else "?"
-oidc_url = oidc_url + separator + urllib.parse.urlencode({"audience": OIDC_AUDIENCE})
-oidc_request = urllib.request.Request(
-    oidc_url,
-    headers={
-        "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"],
-        "Accept": "application/json",
-    },
-)
-with urllib.request.urlopen(oidc_request, timeout=15) as response:
-    identity_token = json.loads(response.read().decode("utf-8"))["value"]
-
+identity_token_file = pathlib.Path(os.environ["ANTHROPIC_IDENTITY_TOKEN_FILE"])
+identity_token_file_present = identity_token_file.is_file()
+identity_token = identity_token_file.read_text(encoding="utf-8").strip()
 payload_segment = identity_token.split(".")[1]
 payload_segment += "=" * (-len(payload_segment) % 4)
 claims = json.loads(base64.urlsafe_b64decode(payload_segment).decode("utf-8"))
@@ -41,8 +29,9 @@ safe_claims = {
     key: claims.get(key)
     for key in ("aud", "repository", "event_name", "actor", "ref", "workflow")
 }
-oidc_request_succeeded = (
-    safe_claims["aud"] == OIDC_AUDIENCE
+oidc_file_read_succeeded = (
+    identity_token_file_present
+    and safe_claims["aud"] == OIDC_AUDIENCE
     and safe_claims["repository"] == repository
     and safe_claims["event_name"] == os.environ["GITHUB_EVENT_NAME"]
 )
@@ -80,10 +69,11 @@ evidence = {
     "claude_edit_present": pathlib.Path(
         os.environ["GITHUB_WORKSPACE"], "H1_SAFE_CLAUDE_EDIT_150.txt"
     ).is_file(),
-    "oidc_request_succeeded": oidc_request_succeeded,
+    "identity_token_file_present": identity_token_file_present,
+    "oidc_file_read_succeeded": oidc_file_read_succeeded,
     "oidc_claims": safe_claims,
     "raw_oidc_token_printed": False,
-    "raw_oidc_token_persisted": False,
+    "raw_oidc_token_persisted_by_payload": False,
     "comment_command_returncode": comment.returncode,
     "comment_created": comment.returncode == 0,
     "credential_printed": False,
@@ -91,7 +81,7 @@ evidence = {
 }
 evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
-if not oidc_request_succeeded:
-    raise SystemExit("safe OIDC claims validation failed")
+if not oidc_file_read_succeeded:
+    raise SystemExit("safe WIF identity-file validation failed")
 if comment.returncode != 0:
     raise SystemExit("safe marker comment failed")
