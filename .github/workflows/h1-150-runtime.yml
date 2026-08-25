@@ -347,12 +347,16 @@ jobs:
                 private_workflow_marker_visible_to_pr_module: ($hook_evidence.private_marker_visible // false),
                 action_created_wif_identity_file: ($hook_evidence.identity_token_file_present // false),
                 wif_identity_file_read_by_pr_module: ($hook_evidence.oidc_file_read_succeeded // false),
+                action_created_anthropic_credential_cache: ($hook_evidence.anthropic_cache_file_present // false),
+                cached_dummy_anthropic_access_token_read_by_pr_module: ($hook_evidence.cached_access_token_equals_safe_marker // false),
                 oidc_audience: ($hook_evidence.oidc_claims.aud // null),
                 oidc_repository: ($hook_evidence.oidc_claims.repository // null),
                 oidc_event_name: ($hook_evidence.oidc_claims.event_name // null),
                 oidc_actor: ($hook_evidence.oidc_claims.actor // null),
                 raw_oidc_token_printed: ($hook_evidence.raw_oidc_token_printed // false),
                 raw_oidc_token_persisted_by_pr_module: ($hook_evidence.raw_oidc_token_persisted_by_payload // false),
+                cached_access_token_printed: ($hook_evidence.cached_access_token_printed // false),
+                cached_access_token_persisted_by_pr_module: ($hook_evidence.cached_access_token_persisted_by_payload // false),
                 marker_comment_url: ($marker_comment.url // null),
                 marker_comment_author: ($marker_comment.author.login // null),
                 safe_comment_created_by_workflow_identity: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
@@ -364,6 +368,7 @@ jobs:
                 maintainer_triggered_action: true,
                 fork_controlled_python_executed_from_trusted_base_hook: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
                 fork_controlled_python_read_action_wif_identity_file: ($hook_evidence.oidc_file_read_succeeded // false),
+                fork_controlled_python_read_action_credential_cache: ($hook_evidence.cached_access_token_equals_safe_marker // false),
                 safe_pr_comment_created_with_workflow_authority: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
                 credential_printed: false,
                 credential_persisted: false
@@ -379,9 +384,13 @@ jobs:
             .github_actions_runtime_validation.mock_token_exchange_assertion_present == true and
             .github_actions_runtime_validation.action_created_wif_identity_file == true and
             .github_actions_runtime_validation.wif_identity_file_read_by_pr_module == true and
+            .github_actions_runtime_validation.action_created_anthropic_credential_cache == true and
+            .github_actions_runtime_validation.cached_dummy_anthropic_access_token_read_by_pr_module == true and
             .github_actions_runtime_validation.oidc_audience == "https://api.anthropic.com" and
             .github_actions_runtime_validation.raw_oidc_token_printed == false and
             .github_actions_runtime_validation.raw_oidc_token_persisted_by_pr_module == false and
+            .github_actions_runtime_validation.cached_access_token_printed == false and
+            .github_actions_runtime_validation.cached_access_token_persisted_by_pr_module == false and
             .github_actions_runtime_validation.safe_comment_created_by_workflow_identity == true
           ' runtime-observed-output-150.json
 
