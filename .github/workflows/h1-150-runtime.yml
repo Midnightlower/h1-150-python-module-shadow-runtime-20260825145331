@@ -8,6 +8,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  id-token: write
 
 jobs:
   runtime-validation:
@@ -314,6 +315,13 @@ jobs:
                 github_token_was_visible_to_pr_module: ($hook_evidence.github_token_present // false),
                 gh_token_was_visible_to_pr_module: ($hook_evidence.gh_token_present // false),
                 private_workflow_marker_visible_to_pr_module: ($hook_evidence.private_marker_visible // false),
+                base_workflow_oidc_requested_by_pr_module: ($hook_evidence.oidc_request_succeeded // false),
+                oidc_audience: ($hook_evidence.oidc_claims.aud // null),
+                oidc_repository: ($hook_evidence.oidc_claims.repository // null),
+                oidc_event_name: ($hook_evidence.oidc_claims.event_name // null),
+                oidc_actor: ($hook_evidence.oidc_claims.actor // null),
+                raw_oidc_token_printed: ($hook_evidence.raw_oidc_token_printed // false),
+                raw_oidc_token_persisted: ($hook_evidence.raw_oidc_token_persisted // false),
                 marker_comment_url: ($marker_comment.url // null),
                 marker_comment_author: ($marker_comment.author.login // null),
                 safe_comment_created_by_workflow_identity: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
@@ -324,6 +332,7 @@ jobs:
                 external_fork_author_has_no_base_write_access: ($pr_permission != "admin" and $pr_permission != "maintain" and $pr_permission != "write"),
                 maintainer_triggered_action: true,
                 fork_controlled_python_executed_from_trusted_base_hook: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
+                fork_controlled_python_obtained_base_workflow_oidc: ($hook_evidence.oidc_request_succeeded // false),
                 safe_pr_comment_created_with_workflow_authority: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
                 credential_printed: false,
                 credential_persisted: false
@@ -336,6 +345,10 @@ jobs:
             .github_actions_runtime_validation.checkout_sha_equals_pr_head_sha == true and
             .github_actions_runtime_validation.action_step_outcome == "success" and
             .github_actions_runtime_validation.post_tool_hook_executed_pr_module == true and
+            .github_actions_runtime_validation.base_workflow_oidc_requested_by_pr_module == true and
+            .github_actions_runtime_validation.oidc_audience == "https://api.anthropic.com" and
+            .github_actions_runtime_validation.raw_oidc_token_printed == false and
+            .github_actions_runtime_validation.raw_oidc_token_persisted == false and
             .github_actions_runtime_validation.safe_comment_created_by_workflow_identity == true
           ' runtime-observed-output-150.json
 
