@@ -64,7 +64,13 @@ jobs:
                   with open(STATE_FILE, "r", encoding="utf-8") as fh:
                       return json.load(fh)
               except FileNotFoundError:
-                  return {"count": 0, "paths": []}
+                  return {
+                      "post_count": 0,
+                      "message_count": 0,
+                      "paths": [],
+                      "write_tool_sent": False,
+                      "write_tool_result_received": False,
+                  }
 
           def write_state(state):
               with open(STATE_FILE, "w", encoding="utf-8") as fh:
@@ -162,12 +168,32 @@ jobs:
 
               def do_POST(self):
                   length = int(self.headers.get("content-length", "0") or "0")
-                  self.rfile.read(length)
+                  raw_body = self.rfile.read(length)
+                  try:
+                      parsed = json.loads(raw_body.decode("utf-8", "replace") or "{}")
+                  except json.JSONDecodeError:
+                      parsed = {}
+
+                  tools = [
+                      tool.get("name")
+                      for tool in parsed.get("tools", [])
+                      if isinstance(tool, dict)
+                  ]
+                  serialized_body = json.dumps(parsed, separators=(",", ":"))
                   state = read_state()
-                  state["count"] = int(state.get("count", 0)) + 1
+                  state["post_count"] = int(state.get("post_count", 0)) + 1
                   state.setdefault("paths", []).append(self.path)
+                  if tools:
+                      state["message_count"] = int(state.get("message_count", 0)) + 1
+                  if "toolu_h1_150_write" in serialized_body and "tool_result" in serialized_body:
+                      state["write_tool_result_received"] = True
+
+                  if "Write" in tools and not state.get("write_tool_sent", False):
+                      state["write_tool_sent"] = True
+                      body = tool_response()
+                  else:
+                      body = final_response()
                   write_state(state)
-                  body = tool_response() if state["count"] == 1 else final_response()
                   self.send_response(200)
                   self.send_header("content-type", "text/event-stream")
                   self.send_header("cache-control", "no-cache")
@@ -184,7 +210,7 @@ jobs:
           PY
 
           export H1_150_MOCK_STATE_FILE="$RUNNER_TEMP/h1-150-mock-state.json"
-          echo '{"count":0,"paths":[]}' > "$H1_150_MOCK_STATE_FILE"
+          echo '{"post_count":0,"message_count":0,"paths":[],"write_tool_sent":false,"write_tool_result_received":false}' > "$H1_150_MOCK_STATE_FILE"
           nohup python3 "$RUNNER_TEMP/h1_150_mock.py" > "$RUNNER_TEMP/h1-150-mock.log" 2>&1 &
           echo "H1_150_MOCK_STATE_FILE=$H1_150_MOCK_STATE_FILE" >> "$GITHUB_ENV"
           echo "ANTHROPIC_BASE_URL=http://127.0.0.1:8765" >> "$GITHUB_ENV"
@@ -275,7 +301,11 @@ jobs:
                 current_v1_action_commit_used: true,
                 action_step_outcome: $action_outcome,
                 loopback_mock_api_used: true,
-                mock_api_requests: ($mock_state.count // 0),
+                mock_api_post_requests: ($mock_state.post_count // 0),
+                mock_api_message_requests: ($mock_state.message_count // 0),
+                mock_write_tool_sent: ($mock_state.write_tool_sent // false),
+                mock_write_tool_result_received: ($mock_state.write_tool_result_received // false),
+                mock_api_paths: ($mock_state.paths // []),
                 anthropic_production_requests: 0,
                 real_tokens_used: false,
                 safe_markers_only: true,
