@@ -71,6 +71,8 @@ jobs:
                       "paths": [],
                       "write_tool_sent": False,
                       "write_tool_result_received": False,
+                      "token_exchange_requests": 0,
+                      "token_exchange_assertion_present": False,
                   }
 
           def write_state(state):
@@ -184,6 +186,27 @@ jobs:
                   state = read_state()
                   state["post_count"] = int(state.get("post_count", 0)) + 1
                   state.setdefault("paths", []).append(self.path)
+                  if self.path.startswith("/v1/oauth/token"):
+                      state["token_exchange_requests"] = int(
+                          state.get("token_exchange_requests", 0)
+                      ) + 1
+                      state["token_exchange_assertion_present"] = bool(
+                          parsed.get("assertion")
+                      )
+                      write_state(state)
+                      body = json.dumps(
+                          {
+                              "access_token": "H1_FAKE_ANTHROPIC_ACCESS_TOKEN_150",
+                              "token_type": "bearer",
+                              "expires_in": 3600,
+                          }
+                      ).encode()
+                      self.send_response(200)
+                      self.send_header("content-type", "application/json")
+                      self.send_header("content-length", str(len(body)))
+                      self.end_headers()
+                      self.wfile.write(body)
+                      return
                   if tools:
                       state["message_count"] = int(state.get("message_count", 0)) + 1
                   if "toolu_h1_150_write" in serialized_body and "tool_result" in serialized_body:
@@ -211,7 +234,7 @@ jobs:
           PY
 
           export H1_150_MOCK_STATE_FILE="$RUNNER_TEMP/h1-150-mock-state.json"
-          echo '{"post_count":0,"message_count":0,"paths":[],"write_tool_sent":false,"write_tool_result_received":false}' > "$H1_150_MOCK_STATE_FILE"
+          echo '{"post_count":0,"message_count":0,"paths":[],"write_tool_sent":false,"write_tool_result_received":false,"token_exchange_requests":0,"token_exchange_assertion_present":false}' > "$H1_150_MOCK_STATE_FILE"
           nohup python3 "$RUNNER_TEMP/h1_150_mock.py" > "$RUNNER_TEMP/h1-150-mock.log" 2>&1 &
           echo "H1_150_MOCK_STATE_FILE=$H1_150_MOCK_STATE_FILE" >> "$GITHUB_ENV"
           echo "ANTHROPIC_BASE_URL=http://127.0.0.1:8765" >> "$GITHUB_ENV"
@@ -229,7 +252,10 @@ jobs:
         uses: anthropics/claude-code-action@dcb57747bfceeaa1fa72638cae52295d1d853d4a
         with:
           github_token: ${{ github.token }}
-          anthropic_api_key: H1_FAKE_ANTHROPIC_API_KEY_150
+          anthropic_federation_rule_id: h1_fake_federation_rule_150
+          anthropic_organization_id: h1_fake_organization_150
+          anthropic_service_account_id: h1_fake_service_account_150
+          anthropic_workspace_id: h1_fake_workspace_150
           use_sticky_comment: false
           claude_args: |
             --model claude-opus-4-6
@@ -306,22 +332,27 @@ jobs:
                 mock_api_message_requests: ($mock_state.message_count // 0),
                 mock_write_tool_sent: ($mock_state.write_tool_sent // false),
                 mock_write_tool_result_received: ($mock_state.write_tool_result_received // false),
+                mock_token_exchange_requests: ($mock_state.token_exchange_requests // 0),
+                mock_token_exchange_assertion_present: ($mock_state.token_exchange_assertion_present // false),
                 mock_api_paths: ($mock_state.paths // []),
                 anthropic_production_requests: 0,
-                real_tokens_used: false,
-                safe_markers_only: true,
+                github_oidc_requests: 1,
+                researcher_owned_github_oidc_only: true,
+                real_anthropic_tokens_used: false,
+                raw_github_oidc_token_logged: false,
                 claude_write_tool_completed: ($hook_evidence.claude_edit_present // false),
                 post_tool_hook_executed_pr_module: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
                 github_token_was_visible_to_pr_module: ($hook_evidence.github_token_present // false),
                 gh_token_was_visible_to_pr_module: ($hook_evidence.gh_token_present // false),
                 private_workflow_marker_visible_to_pr_module: ($hook_evidence.private_marker_visible // false),
-                base_workflow_oidc_requested_by_pr_module: ($hook_evidence.oidc_request_succeeded // false),
+                action_created_wif_identity_file: ($hook_evidence.identity_token_file_present // false),
+                wif_identity_file_read_by_pr_module: ($hook_evidence.oidc_file_read_succeeded // false),
                 oidc_audience: ($hook_evidence.oidc_claims.aud // null),
                 oidc_repository: ($hook_evidence.oidc_claims.repository // null),
                 oidc_event_name: ($hook_evidence.oidc_claims.event_name // null),
                 oidc_actor: ($hook_evidence.oidc_claims.actor // null),
                 raw_oidc_token_printed: ($hook_evidence.raw_oidc_token_printed // false),
-                raw_oidc_token_persisted: ($hook_evidence.raw_oidc_token_persisted // false),
+                raw_oidc_token_persisted_by_pr_module: ($hook_evidence.raw_oidc_token_persisted_by_payload // false),
                 marker_comment_url: ($marker_comment.url // null),
                 marker_comment_author: ($marker_comment.author.login // null),
                 safe_comment_created_by_workflow_identity: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
@@ -332,7 +363,7 @@ jobs:
                 external_fork_author_has_no_base_write_access: ($pr_permission != "admin" and $pr_permission != "maintain" and $pr_permission != "write"),
                 maintainer_triggered_action: true,
                 fork_controlled_python_executed_from_trusted_base_hook: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
-                fork_controlled_python_obtained_base_workflow_oidc: ($hook_evidence.oidc_request_succeeded // false),
+                fork_controlled_python_read_action_wif_identity_file: ($hook_evidence.oidc_file_read_succeeded // false),
                 safe_pr_comment_created_with_workflow_authority: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
                 credential_printed: false,
                 credential_persisted: false
@@ -345,10 +376,12 @@ jobs:
             .github_actions_runtime_validation.checkout_sha_equals_pr_head_sha == true and
             .github_actions_runtime_validation.action_step_outcome == "success" and
             .github_actions_runtime_validation.post_tool_hook_executed_pr_module == true and
-            .github_actions_runtime_validation.base_workflow_oidc_requested_by_pr_module == true and
+            .github_actions_runtime_validation.mock_token_exchange_assertion_present == true and
+            .github_actions_runtime_validation.action_created_wif_identity_file == true and
+            .github_actions_runtime_validation.wif_identity_file_read_by_pr_module == true and
             .github_actions_runtime_validation.oidc_audience == "https://api.anthropic.com" and
             .github_actions_runtime_validation.raw_oidc_token_printed == false and
-            .github_actions_runtime_validation.raw_oidc_token_persisted == false and
+            .github_actions_runtime_validation.raw_oidc_token_persisted_by_pr_module == false and
             .github_actions_runtime_validation.safe_comment_created_by_workflow_identity == true
           ' runtime-observed-output-150.json
 
