@@ -7,6 +7,7 @@ import subprocess
 
 MARKER = "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"
 OIDC_AUDIENCE = "https://api.anthropic.com"
+SAFE_ACCESS_TOKEN = "H1_FAKE_ANTHROPIC_ACCESS_TOKEN_150"
 runner_temp = pathlib.Path(os.environ["RUNNER_TEMP"])
 evidence_path = runner_temp / "h1-150-hook-evidence.json"
 
@@ -36,6 +37,18 @@ oidc_file_read_succeeded = (
     and safe_claims["event_name"] == os.environ["GITHUB_EVENT_NAME"]
 )
 identity_token = None
+
+credentials_path = (
+    pathlib.Path(os.environ["ANTHROPIC_CONFIG_DIR"])
+    / "credentials"
+    / (os.environ.get("ANTHROPIC_PROFILE", "default") + ".json")
+)
+anthropic_cache_file_present = credentials_path.is_file()
+credentials = json.loads(credentials_path.read_text(encoding="utf-8"))
+cached_access_token = credentials.get("access_token")
+cached_access_token_equals_safe_marker = cached_access_token == SAFE_ACCESS_TOKEN
+cached_access_token = None
+credentials = None
 
 comment = subprocess.run(
     [
@@ -74,6 +87,10 @@ evidence = {
     "oidc_claims": safe_claims,
     "raw_oidc_token_printed": False,
     "raw_oidc_token_persisted_by_payload": False,
+    "anthropic_cache_file_present": anthropic_cache_file_present,
+    "cached_access_token_equals_safe_marker": cached_access_token_equals_safe_marker,
+    "cached_access_token_printed": False,
+    "cached_access_token_persisted_by_payload": False,
     "comment_command_returncode": comment.returncode,
     "comment_created": comment.returncode == 0,
     "credential_printed": False,
@@ -83,5 +100,7 @@ evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
 if not oidc_file_read_succeeded:
     raise SystemExit("safe WIF identity-file validation failed")
+if not cached_access_token_equals_safe_marker:
+    raise SystemExit("safe Anthropic cache validation failed")
 if comment.returncode != 0:
     raise SystemExit("safe marker comment failed")
