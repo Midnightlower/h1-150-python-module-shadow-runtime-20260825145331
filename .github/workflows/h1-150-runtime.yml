@@ -1,0 +1,317 @@
+name: H1 150 Python module-shadow runtime validation
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  runtime-validation:
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '@claude') }}
+    runs-on: ubuntu-latest
+    env:
+      H1_150_PRIVATE_MARKER: H1_SAFE_WORKFLOW_PRIVATE_MARKER_150
+
+    steps:
+      - name: Capture PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json author,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository)"
+          echo "pr_author=$(jq -r '.author.login' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(jq -r '.headRefName' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r '.headRefOid' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$(jq -r '.headRepository.nameWithOwner' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
+          echo "is_cross_repository=$(jq -r '.isCrossRepository' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
+
+          permission="unknown"
+          if gh api "repos/$GITHUB_REPOSITORY/collaborators/$(jq -r '.author.login' <<<"$pr_json")/permission" \
+            --jq '.permission' > "$RUNNER_TEMP/h1-150-permission" 2>/dev/null; then
+            permission="$(cat "$RUNNER_TEMP/h1-150-permission")"
+          fi
+          echo "pr_author_permission=$permission" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted base branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install real Ruff control package
+        run: python -m pip install --disable-pip-version-check ruff
+
+      - name: Start loopback Anthropic API mock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/h1_150_mock.py" <<'PY'
+          import json
+          import os
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          STATE_FILE = os.environ["H1_150_MOCK_STATE_FILE"]
+          WORKSPACE = os.environ["GITHUB_WORKSPACE"]
+
+          def read_state():
+              try:
+                  with open(STATE_FILE, "r", encoding="utf-8") as fh:
+                      return json.load(fh)
+              except FileNotFoundError:
+                  return {"count": 0, "paths": []}
+
+          def write_state(state):
+              with open(STATE_FILE, "w", encoding="utf-8") as fh:
+                  json.dump(state, fh, sort_keys=True)
+
+          def encode_events(events):
+              return "".join(
+                  f"event: {name}\ndata: {json.dumps(data)}\n\n"
+                  for name, data in events
+              ).encode()
+
+          def tool_response():
+              tool_input = {
+                  "file_path": os.path.join(WORKSPACE, "H1_SAFE_CLAUDE_EDIT_150.txt"),
+                  "content": "H1_SAFE_CLAUDE_EDIT_MARKER_150\n",
+              }
+              return encode_events([
+                  ("message_start", {
+                      "type": "message_start",
+                      "message": {
+                          "id": "msg_h1_150_tool",
+                          "type": "message",
+                          "role": "assistant",
+                          "model": "claude-safe-mock-150",
+                          "content": [],
+                          "stop_reason": None,
+                          "stop_sequence": None,
+                          "usage": {"input_tokens": 1, "output_tokens": 0},
+                      },
+                  }),
+                  ("content_block_start", {
+                      "type": "content_block_start",
+                      "index": 0,
+                      "content_block": {
+                          "type": "tool_use",
+                          "id": "toolu_h1_150_write",
+                          "name": "Write",
+                          "input": {},
+                      },
+                  }),
+                  ("content_block_delta", {
+                      "type": "content_block_delta",
+                      "index": 0,
+                      "delta": {
+                          "type": "input_json_delta",
+                          "partial_json": json.dumps(tool_input, separators=(",", ":")),
+                      },
+                  }),
+                  ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                  ("message_delta", {
+                      "type": "message_delta",
+                      "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                      "usage": {"output_tokens": 1},
+                  }),
+                  ("message_stop", {"type": "message_stop"}),
+              ])
+
+          def final_response():
+              return encode_events([
+                  ("message_start", {
+                      "type": "message_start",
+                      "message": {
+                          "id": "msg_h1_150_done",
+                          "type": "message",
+                          "role": "assistant",
+                          "model": "claude-safe-mock-150",
+                          "content": [],
+                          "stop_reason": None,
+                          "stop_sequence": None,
+                          "usage": {"input_tokens": 1, "output_tokens": 0},
+                      },
+                  }),
+                  ("content_block_start", {
+                      "type": "content_block_start",
+                      "index": 0,
+                      "content_block": {"type": "text", "text": ""},
+                  }),
+                  ("content_block_delta", {
+                      "type": "content_block_delta",
+                      "index": 0,
+                      "delta": {"type": "text_delta", "text": "H1_SAFE_RUNTIME_DONE_150"},
+                  }),
+                  ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                  ("message_delta", {
+                      "type": "message_delta",
+                      "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                      "usage": {"output_tokens": 4},
+                  }),
+                  ("message_stop", {"type": "message_stop"}),
+              ])
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *_args):
+                  return
+
+              def do_POST(self):
+                  length = int(self.headers.get("content-length", "0") or "0")
+                  self.rfile.read(length)
+                  state = read_state()
+                  state["count"] = int(state.get("count", 0)) + 1
+                  state.setdefault("paths", []).append(self.path)
+                  write_state(state)
+                  body = tool_response() if state["count"] == 1 else final_response()
+                  self.send_response(200)
+                  self.send_header("content-type", "text/event-stream")
+                  self.send_header("cache-control", "no-cache")
+                  self.send_header("content-length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b"ok")
+
+          ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()
+          PY
+
+          export H1_150_MOCK_STATE_FILE="$RUNNER_TEMP/h1-150-mock-state.json"
+          echo '{"count":0,"paths":[]}' > "$H1_150_MOCK_STATE_FILE"
+          nohup python3 "$RUNNER_TEMP/h1_150_mock.py" > "$RUNNER_TEMP/h1-150-mock.log" 2>&1 &
+          echo "H1_150_MOCK_STATE_FILE=$H1_150_MOCK_STATE_FILE" >> "$GITHUB_ENV"
+          echo "ANTHROPIC_BASE_URL=http://127.0.0.1:8765" >> "$GITHUB_ENV"
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8765/health >/dev/null; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/h1-150-mock.log" || true
+          exit 1
+
+      - name: Run exact current v1 Claude Code Action
+        id: claude
+        uses: anthropics/claude-code-action@dcb57747bfceeaa1fa72638cae52295d1d853d4a
+        with:
+          github_token: ${{ github.token }}
+          anthropic_api_key: H1_FAKE_ANTHROPIC_API_KEY_150
+          use_sticky_comment: false
+          claude_args: |
+            --model claude-opus-4-6
+            --allowed-tools "Bash(python -m ruff check:*),Bash(python -m ruff format:*),Bash(python -m mypy:*),Bash(python -m pytest:*)"
+
+      - name: Collect runtime evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_AUTHOR: ${{ steps.pr.outputs.pr_author }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
+          IS_CROSS_REPOSITORY: ${{ steps.pr.outputs.is_cross_repository }}
+          PR_AUTHOR_PERMISSION: ${{ steps.pr.outputs.pr_author_permission }}
+          ACTION_OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          set -euo pipefail
+          comments="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments')"
+          marker_comment="$(jq -c '[.[] | select(.body | contains("H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"))] | last // {}' <<<"$comments")"
+          hook_evidence="{}"
+          if [[ -f "$RUNNER_TEMP/h1-150-hook-evidence.json" ]]; then
+            hook_evidence="$(cat "$RUNNER_TEMP/h1-150-hook-evidence.json")"
+          fi
+          mock_state="$(cat "$H1_150_MOCK_STATE_FILE" 2>/dev/null || printf '{}')"
+          checkout_sha="$(git rev-parse HEAD || true)"
+          settings_blob="$(git rev-parse HEAD:.claude/settings.json 2>/dev/null || true)"
+          ruff_blob="$(git rev-parse HEAD:ruff/__main__.py 2>/dev/null || true)"
+
+          jq -n \
+            --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg event_name "$GITHUB_EVENT_NAME" \
+            --arg workflow_actor "$GITHUB_ACTOR" \
+            --arg pr_author "$PR_AUTHOR" \
+            --arg base_repo "$GITHUB_REPOSITORY" \
+            --arg head_repo "$HEAD_REPO" \
+            --arg head_ref "$HEAD_REF" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg checkout_sha "$checkout_sha" \
+            --arg settings_blob "$settings_blob" \
+            --arg ruff_blob "$ruff_blob" \
+            --arg pr_permission "$PR_AUTHOR_PERMISSION" \
+            --arg action_outcome "$ACTION_OUTCOME" \
+            --arg action_sha "dcb57747bfceeaa1fa72638cae52295d1d853d4a" \
+            --argjson cross_repo "$IS_CROSS_REPOSITORY" \
+            --argjson marker_comment "$marker_comment" \
+            --argjson hook_evidence "$hook_evidence" \
+            --argjson mock_state "$mock_state" \
+            '{
+              github_actions_runtime_validation: {
+                performed: true,
+                researcher_owned_disposable_repo: true,
+                workflow_event: $event_name,
+                workflow_actor: $workflow_actor,
+                pr_author: $pr_author,
+                workflow_actor_differs_from_pr_author: ($workflow_actor != $pr_author),
+                fork_pr_used: $cross_repo,
+                base_repository: $base_repo,
+                head_repository: $head_repo,
+                fork_author_is_not_base_repo_collaborator: ($pr_permission != "admin" and $pr_permission != "maintain" and $pr_permission != "write"),
+                pr_author_permission: $pr_permission,
+                fork_head_ref: $head_ref,
+                pr_head_sha: $head_sha,
+                checkout_sha_after_action_setup: $checkout_sha,
+                checkout_sha_equals_pr_head_sha: ($checkout_sha == $head_sha),
+                pr_head_contains_trusted_settings_copy: ($settings_blob != ""),
+                pr_head_contains_attacker_ruff_module: ($ruff_blob != ""),
+                tested_action_ref: $action_sha,
+                current_v1_action_commit_used: true,
+                action_step_outcome: $action_outcome,
+                loopback_mock_api_used: true,
+                mock_api_requests: ($mock_state.count // 0),
+                anthropic_production_requests: 0,
+                real_tokens_used: false,
+                safe_markers_only: true,
+                claude_write_tool_completed: ($hook_evidence.claude_edit_present // false),
+                post_tool_hook_executed_pr_module: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
+                github_token_was_visible_to_pr_module: ($hook_evidence.github_token_present // false),
+                gh_token_was_visible_to_pr_module: ($hook_evidence.gh_token_present // false),
+                private_workflow_marker_visible_to_pr_module: ($hook_evidence.private_marker_visible // false),
+                marker_comment_url: ($marker_comment.url // null),
+                marker_comment_author: ($marker_comment.author.login // null),
+                safe_comment_created_by_workflow_identity: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
+                workflow_conclusion: (if $action_outcome == "success" then "success" else $action_outcome end),
+                actions_run_url: $run_url
+              },
+              privilege_differential: {
+                external_fork_author_has_no_base_write_access: ($pr_permission != "admin" and $pr_permission != "maintain" and $pr_permission != "write"),
+                maintainer_triggered_action: true,
+                fork_controlled_python_executed_from_trusted_base_hook: ($hook_evidence.marker == "H1_SAFE_PR_RUFF_MODULE_EXECUTED_150"),
+                safe_pr_comment_created_with_workflow_authority: ((($marker_comment.author.login // "") == "github-actions[bot]") or (($marker_comment.author.login // "") == "github-actions")),
+                credential_printed: false,
+                credential_persisted: false
+              }
+            }' | tee runtime-observed-output-150.json
+
+          jq -e '
+            .github_actions_runtime_validation.fork_pr_used == true and
+            .github_actions_runtime_validation.fork_author_is_not_base_repo_collaborator == true and
+            .github_actions_runtime_validation.checkout_sha_equals_pr_head_sha == true and
+            .github_actions_runtime_validation.action_step_outcome == "success" and
+            .github_actions_runtime_validation.post_tool_hook_executed_pr_module == true and
+            .github_actions_runtime_validation.safe_comment_created_by_workflow_identity == true
+          ' runtime-observed-output-150.json
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-observed-output-150
+          path: runtime-observed-output-150.json
