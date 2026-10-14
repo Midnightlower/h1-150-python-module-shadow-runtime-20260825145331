@@ -249,7 +249,7 @@ jobs:
 
       - name: Run exact current v1 Claude Code Action
         id: claude
-        uses: anthropics/claude-code-action@dcb57747bfceeaa1fa72638cae52295d1d853d4a
+        uses: anthropics/claude-code-action@34968b5981d5d170904281aa3df6f3c0d4a28855
         with:
           github_token: ${{ github.token }}
           anthropic_federation_rule_id: h1_fake_federation_rule_150
